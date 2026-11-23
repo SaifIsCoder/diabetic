@@ -3,6 +3,7 @@ import {
   StyleSheet,
   View,
   Text,
+  Image,
   ScrollView,
   TouchableOpacity,
   Alert,
@@ -60,8 +61,11 @@ interface PatientScanRecord {
   label: string;
   probabilities: Record<string, number>;
   model_version: string;
+  confidence?: number | null;
   patient_notes?: string | null;
   created_at: string;
+  storage_path?: string | null;
+  image_url?: string | null;
   reviews?: Array<{
     id: string;
     confirmed_grade: number;
@@ -110,6 +114,9 @@ export default function CliniciansScreen() {
   const [reviewNotes, setReviewNotes] = useState('');
   const [recommendation, setRecommendation] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState<boolean>(false);
+  const [imageError, setImageError] = useState<boolean>(false);
 
   const fetchGrants = useCallback(async (isRefresh = false) => {
     if (!user?.id) {
@@ -286,8 +293,8 @@ export default function CliniciansScreen() {
     }
   };
 
-  // --- Doctor: Open Review Modal ---
-  const handleOpenReviewModal = (scan: PatientScanRecord) => {
+  // --- Doctor: Open Review Modal (QA-01) ---
+  const handleOpenReviewModal = async (scan: PatientScanRecord) => {
     if (!profile?.is_verified) {
       Alert.alert(
         'Verification Required',
@@ -299,6 +306,52 @@ export default function CliniciansScreen() {
     setConfirmedGrade(scan.grade);
     setReviewNotes('');
     setRecommendation('');
+    setImageLoading(true);
+    setImageError(false);
+    setPreviewImageUrl(null);
+
+    // Resolve fundus image URL for clinical visual review (QA-01)
+    try {
+      if (
+        scan.image_url &&
+        (scan.image_url.startsWith('http://') ||
+          scan.image_url.startsWith('https://') ||
+          scan.image_url.startsWith('data:image/'))
+      ) {
+        setPreviewImageUrl(scan.image_url);
+      } else if (scan.storage_path) {
+        // Attempt signed URL for private bucket
+        const { data: signedData, error: signedErr } = await supabase.storage
+          .from('retinal-scans')
+          .createSignedUrl(scan.storage_path, 3600);
+
+        if (!signedErr && signedData?.signedUrl) {
+          setPreviewImageUrl(signedData.signedUrl);
+        } else {
+          // Fallback to public URL or image_url
+          const { data: pubData } = supabase.storage
+            .from('retinal-scans')
+            .getPublicUrl(scan.storage_path);
+          if (pubData?.publicUrl) {
+            setPreviewImageUrl(pubData.publicUrl);
+          } else if (scan.image_url) {
+            setPreviewImageUrl(scan.image_url);
+          } else {
+            setImageError(true);
+          }
+        }
+      } else if (scan.image_url) {
+        setPreviewImageUrl(scan.image_url);
+      } else {
+        setImageError(true);
+      }
+    } catch (urlErr) {
+      console.warn('Error resolving fundus preview image:', urlErr);
+      setImageError(true);
+    } finally {
+      setImageLoading(false);
+    }
+
     setReviewModalVisible(true);
   };
 
@@ -431,6 +484,187 @@ export default function CliniciansScreen() {
     }
   };
 
+  // --- QA-01: Clinician Review Modal with Retinal Fundus Preview Canvas ---
+  const renderReviewModal = () => (
+    <Modal visible={reviewModalVisible} transparent animationType="slide">
+      <View style={styles.modalOverlay}>
+        <ScrollView contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
+          <View style={[styles.modalCard, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={[styles.modalTitle, { color: theme.text }]}>Clinical Second Opinion</Text>
+                <Text style={[styles.modalSub, { color: theme.textMuted }]}>
+                  {selectedScan?.eye === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'} • Model Pred: Grade {selectedScan?.grade}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setReviewModalVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close dialog"
+                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                style={styles.modalCloseBtn}
+              >
+                <X size={20} color={theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* QA-01: Retinal Fundus Image Preview Canvas */}
+            <View style={styles.fundusPreviewContainer}>
+              <View style={styles.fundusPreviewHeader}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Eye size={16} color={theme.primary} />
+                  <Text style={[styles.fundusPreviewTitle, { color: theme.text }]}>
+                    Retinal Fundus Image Inspection
+                  </Text>
+                </View>
+                <View style={[styles.eyeBadge, { backgroundColor: theme.primary }]}>
+                  <Text style={styles.eyeBadgeText}>
+                    {selectedScan?.eye === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.fundusImageCanvas, { backgroundColor: '#0B0F19', borderColor: theme.border }]}>
+                {imageLoading ? (
+                  <View style={styles.fundusImageStateBox}>
+                    <ActivityIndicator size="large" color={theme.primary} />
+                    <Text style={styles.fundusImageStateText}>Loading retinal fundus image...</Text>
+                  </View>
+                ) : previewImageUrl && !imageError ? (
+                  <View style={styles.fundusImageWrapper}>
+                    <Image
+                      source={{ uri: previewImageUrl }}
+                      style={styles.fundusImage}
+                      resizeMode="contain"
+                      onLoadStart={() => setImageLoading(true)}
+                      onLoadEnd={() => setImageLoading(false)}
+                      onError={() => {
+                        setImageLoading(false);
+                        setImageError(true);
+                      }}
+                    />
+                    <View style={styles.fundusImageOverlayBadge}>
+                      <Text style={styles.fundusImageOverlayText}>
+                        Model AI: Grade {selectedScan?.grade} ({selectedScan?.label})
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.fundusImagePlaceholderBox}>
+                    <AlertTriangle size={32} color="#D97706" style={{ marginBottom: 8 }} />
+                    <Text style={styles.fundusPlaceholderTitle}>Clinical Fundus Image Placeholder</Text>
+                    <Text style={styles.fundusPlaceholderSub}>
+                      Image asset unavailable or awaiting offline synchronization. Inspecting verified automated screening indicators:
+                    </Text>
+                    <View style={styles.fundusMetaRow}>
+                      <Text style={styles.fundusMetaTag}>Scan ID: {selectedScan?.id?.slice(0, 8)}</Text>
+                      <Text style={styles.fundusMetaTag}>AI Grade: {selectedScan?.grade}</Text>
+                      <Text style={styles.fundusMetaTag}>{selectedScan?.label}</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+              <Text style={[styles.fundusInstructionText, { color: theme.textMuted }]}>
+                Visually inspect retinal vasculature, macula, and optic disc prior to submitting clinical evaluation.
+              </Text>
+            </View>
+
+            {/* Confirmed Grade Selector */}
+            <Text style={[styles.inputLabel, { color: theme.text }]}>Confirmed Clinical Grade</Text>
+            <View style={{ gap: 6, marginBottom: 12 }}>
+              {DR_SEVERITY_LEVELS.map((level, idx) => {
+                const isSelected = confirmedGrade === idx;
+                return (
+                  <TouchableOpacity
+                    key={level}
+                    style={[
+                      styles.gradeOptionBtn,
+                      { borderColor: theme.border, backgroundColor: theme.background },
+                      isSelected && { borderColor: theme.primary, backgroundColor: '#E0F2FE' },
+                    ]}
+                    onPress={() => setConfirmedGrade(idx)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isSelected }}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Text
+                      style={[
+                        styles.gradeOptionText,
+                        { color: isSelected ? theme.primary : theme.text },
+                        isSelected && { fontFamily: 'PlusJakartaSans_700Bold' },
+                      ]}
+                    >
+                      {level}
+                    </Text>
+                    {isSelected && <Check size={16} color={theme.primary} />}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Clinical Review Notes */}
+            <Text style={[styles.inputLabel, { color: theme.text }]}>Clinical Evaluation Notes *</Text>
+            <TextInput
+              style={[
+                styles.textArea,
+                { color: theme.text, borderColor: theme.border, backgroundColor: theme.background },
+              ]}
+              placeholder="Microaneurysms, hemorrhages, hard exudates observations..."
+              placeholderTextColor={theme.textMuted}
+              multiline
+              numberOfLines={3}
+              value={reviewNotes}
+              onChangeText={setReviewNotes}
+            />
+
+            {/* Recommendation */}
+            <Text style={[styles.inputLabel, { color: theme.text }]}>Patient Recommendation (Optional)</Text>
+            <TextInput
+              style={[
+                styles.textArea,
+                { color: theme.text, borderColor: theme.border, backgroundColor: theme.background },
+              ]}
+              placeholder="e.g. Schedule follow-up dilated exam in 3 months; refer for OCT."
+              placeholderTextColor={theme.textMuted}
+              multiline
+              numberOfLines={2}
+              value={recommendation}
+              onChangeText={setRecommendation}
+            />
+
+            {/* Buttons */}
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity
+                style={[styles.modalCancelBtn, { borderColor: theme.border }]}
+                onPress={() => setReviewModalVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Text style={[styles.modalCancelBtnText, { color: theme.textMuted }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalSaveBtn, { backgroundColor: theme.primary }]}
+                onPress={handleSubmitReview}
+                disabled={submittingReview}
+                accessibilityRole="button"
+                accessibilityLabel="Sign and save review"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                {submittingReview ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalSaveBtnText}>Sign & Save Review</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.background }]}
@@ -516,6 +750,9 @@ export default function CliniciansScreen() {
                 style={[styles.redeemBtn, { backgroundColor: theme.primary }]}
                 onPress={handleRedeemCode}
                 disabled={redeeming}
+                accessibilityRole="button"
+                accessibilityLabel="Claim patient access"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 {redeeming ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -561,6 +798,9 @@ export default function CliniciansScreen() {
                 <TouchableOpacity
                   style={[styles.inspectBtn, { backgroundColor: theme.primary }]}
                   onPress={() => handleInspectPatientScans(grant)}
+                  accessibilityRole="button"
+                  accessibilityLabel="View patient scans"
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 >
                   <Eye size={14} color="#FFFFFF" />
                   <Text style={styles.inspectBtnText}>View Scans</Text>
@@ -594,8 +834,9 @@ export default function CliniciansScreen() {
                 style={[styles.newCodeBtn, { backgroundColor: theme.primary }]}
                 onPress={generateNewGrantCode}
                 disabled={generating}
+                accessibilityRole="button"
                 accessibilityLabel="Generate new authorization code"
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 {generating ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -622,7 +863,13 @@ export default function CliniciansScreen() {
                 <Text style={styles.errorTitle}>Could not load clinician grants</Text>
                 <Text style={styles.errorSub}>{errorMessage}</Text>
               </View>
-              <TouchableOpacity style={styles.retryBtn} onPress={() => fetchGrants()}>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={() => fetchGrants()}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading clinician grants"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
                 <RefreshCw size={14} color="#FFFFFF" />
                 <Text style={styles.retryBtnText}>Retry</Text>
               </TouchableOpacity>
@@ -674,8 +921,9 @@ export default function CliniciansScreen() {
                   <TouchableOpacity
                     style={styles.revokeBtn}
                     onPress={() => handleRevoke(grant.id, grant.clinician_profile?.full_name)}
+                    accessibilityRole="button"
                     accessibilityLabel="Revoke access"
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                   >
                     <Trash2 size={16} color="#DC2626" />
                     <Text style={styles.revokeText}>Revoke</Text>
@@ -696,7 +944,9 @@ export default function CliniciansScreen() {
               <TouchableOpacity
                 style={[styles.bookBtn, { backgroundColor: theme.primary }]}
                 onPress={() => handleBookExternal('St. Jude Retinal Institute', 'https://example.com/stjude-booking')}
+                accessibilityRole="button"
                 accessibilityLabel="Book visit with St. Jude Retinal Institute"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <ExternalLink size={14} color="#FFFFFF" />
                 <Text style={styles.bookBtnText}>Book Visit</Text>
@@ -713,7 +963,9 @@ export default function CliniciansScreen() {
               <TouchableOpacity
                 style={[styles.bookBtn, { backgroundColor: theme.primary }]}
                 onPress={() => handleBookExternal('City Ophthalmic Diagnostic Center', 'https://example.com/cityeye-booking')}
+                accessibilityRole="button"
                 accessibilityLabel="Book visit with City Ophthalmic Diagnostic Center"
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
                 <ExternalLink size={14} color="#FFFFFF" />
                 <Text style={styles.bookBtnText}>Book Visit</Text>
@@ -738,7 +990,13 @@ export default function CliniciansScreen() {
                   Authorized Retinal Image Longitudinal History
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => setInspectModalVisible(false)}>
+              <TouchableOpacity
+                onPress={() => setInspectModalVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close dialog"
+                hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+                style={styles.modalCloseBtn}
+              >
                 <X size={22} color={theme.textMuted} />
               </TouchableOpacity>
             </View>
@@ -769,7 +1027,7 @@ export default function CliniciansScreen() {
                     </View>
 
                     <Text style={[styles.scanGradeText, { color: theme.text }]}>
-                      DenseNet-121 Diagnosis: Grade {scan.grade} ({scan.label})
+                      DenseNet-121 Automated Screening: Grade {scan.grade} ({scan.label})
                     </Text>
 
                     {/* Existing Reviews */}
@@ -800,6 +1058,9 @@ export default function CliniciansScreen() {
                       ]}
                       onPress={() => handleOpenReviewModal(scan)}
                       disabled={!profile?.is_verified}
+                      accessibilityRole="button"
+                      accessibilityLabel={profile?.is_verified ? "Record clinical second opinion" : "Review locked unverified"}
+                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                     >
                       <FileText size={14} color={profile?.is_verified ? '#FFFFFF' : '#64748B'} />
                       <Text
@@ -820,109 +1081,9 @@ export default function CliniciansScreen() {
       </Modal>
 
       {/* ========================================================================= */}
-      {/* DOCTOR: SUBMIT CLINICAL SECOND OPINION MODAL                              */}
+      {/* DOCTOR: SUBMIT CLINICAL SECOND OPINION MODAL (QA-01)                      */}
       {/* ========================================================================= */}
-      <Modal visible={reviewModalVisible} transparent animationType="slide">
-        <View style={styles.modalOverlay}>
-          <ScrollView contentContainerStyle={styles.modalScrollContent} keyboardShouldPersistTaps="handled">
-            <View style={[styles.modalCard, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
-              <View style={styles.modalHeader}>
-                <View>
-                  <Text style={[styles.modalTitle, { color: theme.text }]}>Clinical Second Opinion</Text>
-                  <Text style={[styles.modalSub, { color: theme.textMuted }]}>
-                    {selectedScan?.eye === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'} • Model Pred: Grade {selectedScan?.grade}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setReviewModalVisible(false)}>
-                  <X size={20} color={theme.textMuted} />
-                </TouchableOpacity>
-              </View>
-
-              {/* Confirmed Grade Selector */}
-              <Text style={[styles.inputLabel, { color: theme.text }]}>Confirmed Clinical Grade</Text>
-              <View style={{ gap: 6, marginBottom: 12 }}>
-                {DR_SEVERITY_LEVELS.map((level, idx) => {
-                  const isSelected = confirmedGrade === idx;
-                  return (
-                    <TouchableOpacity
-                      key={level}
-                      style={[
-                        styles.gradeOptionBtn,
-                        { borderColor: theme.border, backgroundColor: theme.background },
-                        isSelected && { borderColor: theme.primary, backgroundColor: '#E0F2FE' },
-                      ]}
-                      onPress={() => setConfirmedGrade(idx)}
-                    >
-                      <Text
-                        style={[
-                          styles.gradeOptionText,
-                          { color: isSelected ? theme.primary : theme.text },
-                          isSelected && { fontFamily: 'PlusJakartaSans_700Bold' },
-                        ]}
-                      >
-                        {level}
-                      </Text>
-                      {isSelected && <Check size={16} color={theme.primary} />}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              {/* Clinical Review Notes */}
-              <Text style={[styles.inputLabel, { color: theme.text }]}>Clinical Evaluation Notes *</Text>
-              <TextInput
-                style={[
-                  styles.textArea,
-                  { color: theme.text, borderColor: theme.border, backgroundColor: theme.background },
-                ]}
-                placeholder="Microaneurysms, hemorrhages, hard exudates observations..."
-                placeholderTextColor={theme.textMuted}
-                multiline
-                numberOfLines={3}
-                value={reviewNotes}
-                onChangeText={setReviewNotes}
-              />
-
-              {/* Recommendation */}
-              <Text style={[styles.inputLabel, { color: theme.text }]}>Patient Recommendation (Optional)</Text>
-              <TextInput
-                style={[
-                  styles.textArea,
-                  { color: theme.text, borderColor: theme.border, backgroundColor: theme.background },
-                ]}
-                placeholder="e.g. Schedule follow-up dilated exam in 3 months; refer for OCT."
-                placeholderTextColor={theme.textMuted}
-                multiline
-                numberOfLines={2}
-                value={recommendation}
-                onChangeText={setRecommendation}
-              />
-
-              {/* Buttons */}
-              <View style={styles.modalBtnRow}>
-                <TouchableOpacity
-                  style={[styles.modalCancelBtn, { borderColor: theme.border }]}
-                  onPress={() => setReviewModalVisible(false)}
-                >
-                  <Text style={[styles.modalCancelBtnText, { color: theme.textMuted }]}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.modalSaveBtn, { backgroundColor: theme.primary }]}
-                  onPress={handleSubmitReview}
-                  disabled={submittingReview}
-                >
-                  {submittingReview ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.modalSaveBtnText}>Sign & Save Review</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-      </Modal>
+      {renderReviewModal()}
     </ScrollView>
   );
 }
@@ -995,6 +1156,7 @@ const styles = StyleSheet.create({
   redeemBtn: {
     paddingVertical: 12,
     paddingHorizontal: 16,
+    minHeight: 48,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1008,9 +1170,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 8,
+    justifyContent: 'center',
   },
   inspectBtnText: {
     color: '#FFFFFF',
@@ -1036,9 +1200,12 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
   newCodeBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    minHeight: 48,
     borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   newCodeBtnText: {
     color: '#FFFFFF',
@@ -1109,10 +1276,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 8,
     backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
   },
   revokeText: {
     color: '#DC2626',
@@ -1145,9 +1314,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 8,
+    justifyContent: 'center',
   },
   bookBtnText: {
     color: '#FFFFFF',
@@ -1192,9 +1363,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     backgroundColor: '#DC2626',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 6,
+    justifyContent: 'center',
   },
   retryBtnText: {
     color: '#FFFFFF',
@@ -1310,7 +1483,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 8,
+    paddingVertical: 12,
+    minHeight: 48,
     borderRadius: 8,
   },
   reviewActionBtnText: {
@@ -1326,8 +1500,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
   },
@@ -1351,23 +1526,137 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   modalCancelBtn: {
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 16,
+    minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   modalCancelBtnText: {
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontSize: 13,
   },
   modalSaveBtn: {
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 18,
+    minHeight: 48,
     borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   modalSaveBtnText: {
     color: '#FFFFFF',
     fontFamily: 'PlusJakartaSans_700Bold',
     fontSize: 13,
+  },
+  modalCloseBtn: {
+    minHeight: 48,
+    minWidth: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // QA-01: Retinal Fundus Preview Canvas Styles
+  fundusPreviewContainer: {
+    marginBottom: 16,
+  },
+  fundusPreviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  fundusPreviewTitle: {
+    fontFamily: 'PlusJakartaSans_700Bold',
+    fontSize: 13,
+  },
+  fundusImageCanvas: {
+    width: '100%',
+    height: 220,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fundusImageWrapper: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fundusImage: {
+    width: '100%',
+    height: '100%',
+  },
+  fundusImageOverlayBadge: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  fundusImageOverlayText: {
+    color: '#FFFFFF',
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontSize: 11,
+  },
+  fundusImageStateBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  fundusImageStateText: {
+    color: '#94A3B8',
+    fontFamily: 'PlusJakartaSans_500Medium',
+    fontSize: 12,
+    marginTop: 8,
+  },
+  fundusImagePlaceholderBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    width: '100%',
+  },
+  fundusPlaceholderTitle: {
+    color: '#FDE68A',
+    fontFamily: 'PlusJakartaSans_700Bold',
+    fontSize: 13,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  fundusPlaceholderSub: {
+    color: '#94A3B8',
+    fontFamily: 'PlusJakartaSans_400Regular',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 16,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+  },
+  fundusMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'center',
+  },
+  fundusMetaTag: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    color: '#E2E8F0',
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontSize: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  fundusInstructionText: {
+    fontFamily: 'PlusJakartaSans_400Regular',
+    fontSize: 11,
+    marginTop: 6,
+    fontStyle: 'italic',
   },
 });

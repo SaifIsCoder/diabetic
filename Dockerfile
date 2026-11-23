@@ -4,8 +4,9 @@ FROM python:3.12-slim
 # Prevent Python from writing .pyc files and buffer outputs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=7860 \
-    RETINA_MODEL_PATH=/app/retfound_model.keras
+    PORT=5000 \
+    RETINA_MODEL_PATH=/app/retfound_model.keras \
+    RETINA_TFLITE_PATH=/app/retfound_model.tflite
 
 WORKDIR /app
 
@@ -23,6 +24,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy model and application source
 COPY retfound_model.keras .
+COPY retfound_model.tflite .
+COPY gemini_validator.py .
 COPY app.py .
 COPY gunicorn.conf.py .
 
@@ -31,11 +34,11 @@ RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 7860
+EXPOSE 5000
 
 # Container healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:7860/api/health || exit 1
+    CMD curl -f http://localhost:${PORT:-5000}/api/health || exit 1
 
 # Production WSGI server
 CMD ["gunicorn", "--config", "gunicorn.conf.py", "app:create_app()"]

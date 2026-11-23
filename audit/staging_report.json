@@ -1,0 +1,60 @@
+{
+  "timestamp": "2026-11-23T15:09:42.078723+00:00",
+  "overall_status": "PASS",
+  "total_checks": 5,
+  "passed_checks": 5,
+  "failed_checks": 0,
+  "checks": [
+    {
+      "name": "dockerfile_non_root",
+      "category": "static_lint",
+      "passed": true,
+      "message": "Dockerfile non-root user directives verified (UID 1000 appuser)",
+      "details": {
+        "issues": [],
+        "dockerfile": "S:\\unimate\\diabetic\\Dockerfile"
+      }
+    },
+    {
+      "name": "compose_staging_isolation",
+      "category": "static_lint",
+      "passed": true,
+      "message": "docker-compose.staging.yml schema and network isolation verified",
+      "details": {
+        "issues": [],
+        "compose_file": "S:\\unimate\\diabetic\\docker-compose.staging.yml"
+      }
+    },
+    {
+      "name": "nginx_tls13_config",
+      "category": "static_lint",
+      "passed": true,
+      "message": "NGINX TLS 1.3, modern ciphers, and client_max_body_size verified",
+      "details": {
+        "issues": [],
+        "nginx_conf": "S:\\unimate\\diabetic\\staging\\nginx\\conf.d\\staging.conf"
+      }
+    },
+    {
+      "name": "nginx_security_headers",
+      "category": "static_lint",
+      "passed": true,
+      "message": "NGINX security headers verified (HSTS, nosniff, DENY, CSP, Referrer-Policy)",
+      "details": {
+        "issues": [],
+        "nginx_conf": "S:\\unimate\\diabetic\\staging\\nginx\\conf.d\\staging.conf"
+      }
+    },
+    {
+      "name": "certificate_validity",
+      "category": "static_lint",
+      "passed": true,
+      "message": "Staging TLS certificate verified (SAN: localhost, retina-staging.local, 127.0.0.1, valid until 2027-11-23)",
+      "details": {
+        "issues": [],
+        "cert_path": "S:\\unimate\\diabetic\\staging\\nginx\\certs\\staging.crt",
+        "valid_until": "2027-11-23 15:07:03+00:00"
+      }
+    }
+  ]
+}

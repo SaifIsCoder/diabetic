@@ -32,9 +32,10 @@ import {
   ShieldAlert,
 } from 'lucide-react-native';
 
+import { router } from 'expo-router';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
-import { INFERENCE_API_URL } from '@/lib/supabase';
+import { supabase, INFERENCE_API_URL } from '@/lib/supabase';
 import { useAuth, UserProfile } from '@/context/AuthContext';
 
 export default function ProfileScreen() {
@@ -51,6 +52,7 @@ export default function ProfileScreen() {
   const [editCity, setEditCity] = useState(profile?.clinic_address_city || '');
   const [editSpecialty, setEditSpecialty] = useState(profile?.specialty || '');
   const [savingProfile, setSavingProfile] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const handleOpenEditModal = () => {
     setEditFullName(profile?.full_name || '');
@@ -112,18 +114,40 @@ export default function ProfileScreen() {
 
   const handleDeleteAccount = () => {
     Alert.alert(
-      'Delete Medical Account?',
-      'Warning: This action is permanent. All your retinal scan records, doctor reviews, and biometric images will be immediately and irreversibly purged from Supabase database and private storage.',
+      'Permanently Delete Medical Account?',
+      'Warning: This action is permanent and irreversible (GDPR Art. 17 Right to Erasure). All your retinal scan records, clinical second opinions, biometric fundus images in private storage, and profile credentials will be permanently purged from the database.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete Everything',
           style: 'destructive',
           onPress: async () => {
-            Alert.alert(
-              'Account Deletion Requested',
-              'Please contact system support or your medical provider to complete identity-verified permanent deletion.'
-            );
+            setDeletingAccount(true);
+            try {
+              const { data, error } = await supabase.rpc('delete_user_account');
+              if (error) {
+                Alert.alert('Deletion Failed', error.message || 'Unable to delete account at this time.');
+                return;
+              }
+              // Sign out and clear local device cache (PRIV-04)
+              await signOut();
+              Alert.alert(
+                'Account Erased',
+                'Your account and all associated medical records have been permanently erased.',
+                [
+                  {
+                    text: 'OK',
+                    onPress: () => {
+                      router.replace('/(auth)/login');
+                    },
+                  },
+                ]
+              );
+            } catch (err: any) {
+              Alert.alert('Deletion Error', err.message || 'An unexpected error occurred during account deletion.');
+            } finally {
+              setDeletingAccount(false);
+            }
           },
         },
       ]
@@ -348,9 +372,20 @@ export default function ProfileScreen() {
 
         <View style={[styles.divider, { backgroundColor: theme.border, marginVertical: 12 }]} />
 
-        <TouchableOpacity style={styles.dataActionRow} onPress={handleDeleteAccount}>
-          <Trash2 size={18} color="#DC2626" />
-          <Text style={[styles.dataActionText, { color: '#DC2626' }]}>Permanently Delete Account & Images</Text>
+        <TouchableOpacity
+          style={styles.dataActionRow}
+          onPress={handleDeleteAccount}
+          disabled={deletingAccount}
+          accessibilityLabel="Permanently delete account and all medical records"
+        >
+          {deletingAccount ? (
+            <ActivityIndicator size="small" color="#DC2626" />
+          ) : (
+            <Trash2 size={18} color="#DC2626" />
+          )}
+          <Text style={[styles.dataActionText, { color: '#DC2626' }]}>
+            {deletingAccount ? 'Purging Account & Data...' : 'Permanently Delete Account & Images'}
+          </Text>
         </TouchableOpacity>
       </View>
 

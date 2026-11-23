@@ -21,6 +21,11 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# TLS certificates and private keys
+*.key
+*.crt
+staging/nginx/certs/
+
 # Local datasets and generated image collections
 /DR_grading/
 /train_images/

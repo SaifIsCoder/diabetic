@@ -48,6 +48,14 @@ def test_api_health(client):
     assert data["model_version"] == "densenet121_ordinal_v1"
 
 
+def test_health_alias(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "healthy"
+    assert data["model_loaded"] is True
+
+
 def test_api_predict_multipart(client):
     img_bytes = create_test_image_bytes()
     data = {

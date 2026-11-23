@@ -1,0 +1,73 @@
+{
+  "total_patients": 200,
+  "total_images": 494,
+  "split_ratios": {
+    "target_train": 0.7,
+    "target_val": 0.15,
+    "target_test": 0.15
+  },
+  "random_seed": 42,
+  "leak_free_verification": {
+    "train_val_overlap_count": 0,
+    "train_test_overlap_count": 0,
+    "val_test_overlap_count": 0,
+    "zero_leakage_verified": true
+  },
+  "train_split": {
+    "patient_count": 140,
+    "image_count": 342,
+    "patient_ratio": 0.7,
+    "patient_grade_distribution": {
+      "grade_0": 58,
+      "grade_1": 29,
+      "grade_2": 26,
+      "grade_3": 12,
+      "grade_4": 15
+    },
+    "image_grade_distribution": {
+      "grade_0": 139,
+      "grade_1": 76,
+      "grade_2": 55,
+      "grade_3": 42,
+      "grade_4": 30
+    }
+  },
+  "val_split": {
+    "patient_count": 30,
+    "image_count": 72,
+    "patient_ratio": 0.15,
+    "patient_grade_distribution": {
+      "grade_0": 12,
+      "grade_1": 6,
+      "grade_2": 6,
+      "grade_3": 3,
+      "grade_4": 3
+    },
+    "image_grade_distribution": {
+      "grade_0": 29,
+      "grade_1": 18,
+      "grade_2": 9,
+      "grade_3": 12,
+      "grade_4": 4
+    }
+  },
+  "test_split": {
+    "patient_count": 30,
+    "image_count": 80,
+    "patient_ratio": 0.15,
+    "patient_grade_distribution": {
+      "grade_0": 13,
+      "grade_1": 7,
+      "grade_2": 5,
+      "grade_3": 2,
+      "grade_4": 3
+    },
+    "image_grade_distribution": {
+      "grade_0": 40,
+      "grade_1": 21,
+      "grade_2": 10,
+      "grade_3": 5,
+      "grade_4": 4
+    }
+  }
+}

@@ -90,20 +90,39 @@ Expected output:
    ```
    *(Note: Set `--min-instances 1` to eliminate cold-start latency from TensorFlow model loading).*
 
-### Option B: Render / Railway
-1. Connect your GitHub repository to Render / Railway.
-2. Select **Web Service** with runtime **Docker**.
-3. Configure instance type: **Standard (2 GB RAM, 1 CPU minimum)**.
-4. Set Environment Variables:
-   - `PORT=5000`
+### Option B: Render Deployment (Recommended for Cloud PaaS)
+See the full guide in [`docs/render_deployment_guide.md`](file:///s:/unimate/diabetic/docs/render_deployment_guide.md).
+
+#### 1. Blueprint Deployment (Infrastructure-as-Code)
+The repository includes a production-ready Render Blueprint specification: [`render.yaml`](file:///s:/unimate/diabetic/render.yaml).
+1. Go to [Render Dashboard](https://dashboard.render.com/) -> **New +** -> **Blueprint**.
+2. Connect the repository. Render will automatically detect `render.yaml`.
+3. Provide sensitive environment variables when prompted (`GEMINI_API_KEY`, `SUPABASE_JWT_SECRET`, `SCAN_HMAC_SECRET`).
+4. Click **Apply** to deploy.
+
+#### 2. Manual Web Service Deployment
+1. Connect your GitHub repository to Render.
+2. Select **Web Service** with runtime **Docker** (`dockerfilePath: ./Dockerfile`).
+3. Instance Type: **Standard (2 GB RAM, 1 CPU minimum)**.
+   *(Note: 2 GB RAM is required for full-precision Keras DenseNet-121. For Starter instances with 512MB-1GB RAM, set `USE_TFLITE=1` and `GUNICORN_WORKERS=1` to avoid OOM killer exit code 137).*
+4. Set Health Check Path: `/health` (or `/api/health`).
+5. Configure Production Environment Variables:
+   - `FLASK_ENV=production`
+   - `PORT=10000` (Render binds automatically to injected `$PORT`)
    - `RETINA_MODEL_PATH=/app/retfound_model.keras`
+   - `RETINA_TFLITE_PATH=/app/retfound_model.tflite`
+   - `USE_TFLITE=0` (or `1` for quantized TFLite inference)
    - `SUPABASE_JWT_SECRET=<YOUR_SUPABASE_JWT_SECRET>`
    - `GEMINI_API_KEY=<YOUR_GEMINI_API_KEY>`
-   - `GEMINI_MODEL=gemini-2.5-flash`
+   - `GEMINI_MODEL=gemini-3.1-flash-lite`
    - `ENABLE_GEMINI_VALIDATION=true`
-   - `GEMINI_TIMEOUT_SECONDS=10`
+   - `GEMINI_TIMEOUT_SECONDS=15`
    - `GUNICORN_WORKERS=2`
-5. Set Health Check Path: `/api/health`.
+   - `GUNICORN_THREADS=4`
+   - `GUNICORN_TIMEOUT=60`
+   - `RATE_LIMIT_PREDICT=10 per minute`
+   - `RATE_LIMIT_HEALTH=60 per minute`
+   - `ALLOWED_ORIGINS=http://localhost:8081,http://localhost:19006,http://localhost:3000`
 
 ---
 
@@ -111,17 +130,23 @@ Expected output:
 
 1. **Access Supabase Dashboard:**
    - Navigate to your production project at [database.new](https://database.new).
-2. **Execute Schema Migration:**
-   - Open **SQL Editor**.
-   - Paste and execute the contents of [`supabase/migrations/001_initial_schema.sql`](file:///s:/unimate/diabetic/supabase/migrations/001_initial_schema.sql).
+2. **Execute Schema Migrations (in numerical sequence):**
+   - Open **SQL Editor** -> **New Query**.
+   - Paste and execute each migration script in order:
+     1. [`supabase/migrations/001_initial_schema.sql`](file:///s:/unimate/diabetic/supabase/migrations/001_initial_schema.sql) (Core schema, initial RLS, private `retinal-scans` storage bucket)
+     2. [`supabase/migrations/002_rls_and_profile_fixes.sql`](file:///s:/unimate/diabetic/supabase/migrations/002_rls_and_profile_fixes.sql) (Profile insertion policy, performance indexes)
+     3. [`supabase/migrations/003_doctor_registration_and_roles.sql`](file:///s:/unimate/diabetic/supabase/migrations/003_doctor_registration_and_roles.sql) (Clinician verification columns, security trigger)
+     4. [`supabase/migrations/004_security_remediation_sprint1.sql`](file:///s:/unimate/diabetic/supabase/migrations/004_security_remediation_sprint1.sql) (Atomic grant claim RPC, scan immutability, CSPRNG code generation)
+     5. [`supabase/migrations/005_privacy_and_account_deletion.sql`](file:///s:/unimate/diabetic/supabase/migrations/005_privacy_and_account_deletion.sql) (GDPR Art. 17 atomic account deletion RPC)
 3. **Verify Row Level Security (RLS):**
    - Confirm that tables `profiles`, `scans`, `clinician_access_grants`, `clinician_reviews`, and `follow_up_reminders` have **RLS Enabled**.
 4. **Verify Storage Bucket:**
    - Confirm bucket `retinal-scans` is present and flagged as **Private**.
-   - Confirm that policies `Patients upload own scans`, `Patients read own scans`, and `Authorized clinicians read patient scans` are active.
-5. **Retrieve API Secret:**
+   - Confirm that policies `Patients upload own scans`, `Patients read own scans`, `Authorized clinicians read patient scans`, and `Patients delete own scan images` are active.
+5. **Retrieve API Secrets:**
    - Go to **Project Settings** -> **API** -> **JWT Settings**.
-   - Copy the **JWT Secret** and set it as `SUPABASE_JWT_SECRET` in your container environment to enforce token authentication.
+   - Copy the **JWT Secret** and set it as `SUPABASE_JWT_SECRET` in your container environment to enforce fail-closed token authentication.
+   - Copy the **Project URL** and **Anon Key** to set in `mobile/.env` as `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
 
 ---
 

@@ -1,0 +1,86 @@
+# Render Blueprint Specification (Infrastructure-as-Code)
+# Application: Diabetic Retinopathy Diagnostic API & Inference Engine
+# Documentation: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: diabetic-retinopathy-api
+    runtime: docker
+    plan: standard # Recommended: 2 GB RAM, 1 CPU to support TensorFlow DenseNet-121. (Use USE_TFLITE=1 if running on Starter tier)
+    region: oregon # or ohio, frankfurt, singapore
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health # Also aliases to /api/health
+    autoDeploy: true
+
+    envVars:
+      # Application Environment
+      - key: FLASK_ENV
+        value: production
+
+      # Port Binding (Render automatically sets $PORT, default 10000)
+      - key: PORT
+        value: 10000
+
+      # Model Artifact Configurations
+      - key: RETINA_MODEL_PATH
+        value: /app/retfound_model.keras
+      - key: RETINA_TFLITE_PATH
+        value: /app/retfound_model.tflite
+      - key: USE_TFLITE
+        value: "0" # Set to "1" to enable high-throughput quantized TFLite engine (sub-50ms, 67% memory reduction)
+
+      # Gunicorn WSGI Worker & Concurrency Tuning
+      # Default: 2 workers x 4 threads = 8 concurrent request slots
+      - key: GUNICORN_WORKERS
+        value: "2"
+      - key: GUNICORN_THREADS
+        value: "4"
+      - key: GUNICORN_TIMEOUT
+        value: "60"
+      - key: GUNICORN_GRACEFUL_TIMEOUT
+        value: "30"
+      - key: GUNICORN_KEEPALIVE
+        value: "5"
+      - key: LOG_LEVEL
+        value: info
+
+      # Google Gemini Multimodal Vision Pre-screening Gate
+      - key: ENABLE_GEMINI_VALIDATION
+        value: "true"
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: GEMINI_TIMEOUT_SECONDS
+        value: "15"
+
+      # API Rate Limiting (Flask-Limiter)
+      - key: RATE_LIMIT_PREDICT
+        value: 10 per minute
+      - key: RATE_LIMIT_HEALTH
+        value: 60 per minute
+      - key: RATE_LIMIT_VERIFY
+        value: 30 per minute
+
+      # Cross-Origin Resource Sharing (CORS)
+      # Update with your production mobile/web client origins (comma-separated)
+      - key: ALLOWED_ORIGINS
+        value: "http://localhost:8081,http://localhost:19006,http://localhost:3000,http://127.0.0.1:8081,http://127.0.0.1:19006,http://127.0.0.1:3000"
+
+      # =========================================================================
+      # SENSITIVE CREDENTIALS (sync: false prompts for input in Render Dashboard)
+      # =========================================================================
+
+      # Google Gemini Vision API Key (obtain from https://aistudio.google.com/)
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # Supabase Project JWT Secret (from Supabase Dashboard -> Project Settings -> API -> JWT Secret)
+      # Enforces fail-closed Bearer token authentication in production
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # Cryptographic HMAC Key for Tamper-Evident Diagnostic Receipts (ARCH-01)
+      # Can be any high-entropy 256-bit secret, or defaults to SUPABASE_JWT_SECRET
+      - key: SCAN_HMAC_SECRET
+        sync: false

@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
 
 import httpx
+import numpy as np
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -50,6 +52,8 @@ MIN_IMAGE_DIMENSION = 100
 MAX_IMAGE_DIMENSION = 8000
 MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
 SUPPORTED_FORMATS = {"JPEG", "JPG", "PNG", "WEBP"}
+MIN_VARIANCE_THRESHOLD = 10.0
+MIN_ENTROPY_THRESHOLD = 0.5
 
 
 class ValidationStatus(str, Enum):
@@ -149,6 +153,80 @@ class GeminiUnavailableError(FundusValidationError):
         super().__init__(message, "GEMINI_VALIDATION_UNAVAILABLE")
 
 
+def validate_image_entropy_and_variance(
+    rgb_img: Image.Image,
+    min_variance: float = MIN_VARIANCE_THRESHOLD,
+    min_entropy: float = MIN_ENTROPY_THRESHOLD,
+) -> None:
+    """
+    Validates that the image has sufficient visual variance and Shannon entropy
+    to plausibly represent a retinal fundus photograph.
+
+    Rejects non-informative synthetic inputs locally (e.g. blank, pure black,
+    pure white, or flat gray images) before invoking external cloud API calls
+    or executing deep learning inference.
+
+    Raises:
+        InvalidImageError: If the image exhibits insufficient visual entropy/variance.
+    """
+    arr = np.asarray(rgb_img, dtype=np.float32)
+
+    # 1. Extreme uniform bounds (pure black / pure white)
+    max_val = float(np.max(arr))
+    min_val = float(np.min(arr))
+    mean_val = float(np.mean(arr))
+    total_std = float(np.std(arr))
+    total_var = float(np.var(arr))
+
+    if max_val < 5.0 or (mean_val < 5.0 and total_std < 2.0):
+        raise InvalidImageError(
+            "Image has insufficient visual entropy/variance for a fundus photo "
+            f"(blank or pure black image detected; max intensity={max_val:.1f}, mean={mean_val:.1f})."
+        )
+
+    if min_val > 250.0 or (mean_val > 250.0 and total_std < 2.0):
+        raise InvalidImageError(
+            "Image has insufficient visual entropy/variance for a fundus photo "
+            f"(blank or pure white image detected; min intensity={min_val:.1f}, mean={mean_val:.1f})."
+        )
+
+    # 2. Channel means and cross-channel variance (color variation / saturation)
+    mean_channels = [float(np.mean(arr[:, :, c])) for c in range(3)]
+    color_var = float(np.var(mean_channels))
+    color_std = float(np.std(mean_channels))
+
+    # 3. Grayscale conversion for spatial variance
+    gray = rgb_img.convert("L")
+    gray_arr = np.asarray(gray, dtype=np.float32)
+    gray_var = float(np.var(gray_arr))
+    gray_std = float(np.std(gray_arr))
+
+    # 4. Shannon entropy computed across all color channels
+    hist, _ = np.histogram(arr, bins=256, range=(0, 256))
+    total_pixels = float(np.sum(hist))
+    entropy = 0.0
+    if total_pixels > 0:
+        probs = hist[hist > 0] / total_pixels
+        entropy = float(-np.sum(probs * np.log2(probs)))
+
+    # Combined variance metric evaluating spatial texture and color contrast
+    combined_variance = max(total_var, gray_var, color_var)
+
+    # Reject flat gray or uniform achromatic images (no color variation and no spatial variation)
+    if color_std < 2.0 and gray_std < 2.0:
+        raise InvalidImageError(
+            "Image has insufficient visual entropy/variance for a fundus photo "
+            f"(flat gray or uniform image detected; spatial std={gray_std:.2f}, color std={color_std:.2f})."
+        )
+
+    # Reject if combined variance or Shannon entropy is below threshold
+    if combined_variance < min_variance or entropy < min_entropy:
+        raise InvalidImageError(
+            "Image has insufficient visual entropy/variance for a fundus photo "
+            f"(insufficient variance={combined_variance:.2f} < {min_variance:.1f}, entropy={entropy:.2f} < {min_entropy:.1f})."
+        )
+
+
 def validate_image_bytes(image_bytes: bytes) -> Tuple[bytes, str]:
     """
     Validates raw image bytes and normalizes orientation and format.
@@ -156,6 +234,8 @@ def validate_image_bytes(image_bytes: bytes) -> Tuple[bytes, str]:
     - Rejects empty, oversize (>10MB), corrupted, or unreadable images.
     - Rejects images with dimensions < 100x100 or > 8000x8000.
     - Rejects unsupported image formats (only JPEG, PNG, WEBP allowed).
+    - Validates visual variance and Shannon entropy to locally reject blank,
+      pure black, pure white, or flat gray synthetic inputs (ML-04).
     - Normalizes EXIF orientation and converts to standard RGB JPEG representation.
 
     Returns:
@@ -198,6 +278,9 @@ def validate_image_bytes(image_bytes: bytes) -> Tuple[bytes, str]:
 
             # Convert to standard RGB
             rgb_img = work_img.convert("RGB")
+
+            # Local heuristic variance and Shannon entropy check (ML-04)
+            validate_image_entropy_and_variance(rgb_img)
 
             # Encode as sanitized JPEG
             buf = io.BytesIO()

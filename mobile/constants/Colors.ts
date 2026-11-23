@@ -1,6 +1,7 @@
 /**
  * Design Tokens for Diabetic Retinopathy Application
  * Confirmed Palette: Clinical Teal & Midnight Slate Navy
+ * WCAG 2.2 AA Compliant Contrast Ratios
  */
 
 export const SeverityColors = {
@@ -41,31 +42,81 @@ export const SeverityColors = {
   },
 };
 
+export const DarkSeverityColors = {
+  grade0: {
+    badgeBg: "#064E3B",
+    badgeBorder: "#047857",
+    text: "#A7F3D0",
+    indicator: "#34D399",
+    label: "No Diabetic Retinopathy",
+  },
+  grade1: {
+    badgeBg: "#134E4A",
+    badgeBorder: "#0F766E",
+    text: "#99F6E4",
+    indicator: "#2DD4BF",
+    label: "Mild NPDR",
+  },
+  grade2: {
+    badgeBg: "#78350F",
+    badgeBorder: "#B45309",
+    text: "#FDE68A",
+    indicator: "#FBBF24",
+    label: "Moderate NPDR",
+  },
+  grade3: {
+    badgeBg: "#7C2D12",
+    badgeBorder: "#C2410C",
+    text: "#FED7AA",
+    indicator: "#FB923C",
+    label: "Severe NPDR",
+  },
+  grade4: {
+    badgeBg: "#7F1D1D",
+    badgeBorder: "#B91C1C",
+    text: "#FECACA",
+    indicator: "#F87171",
+    label: "Proliferative DR",
+  },
+};
+
+export const getSeverityColors = (grade: number, isDark = false) => {
+  const palette = isDark ? DarkSeverityColors : SeverityColors;
+  switch (grade) {
+    case 0: return palette.grade0;
+    case 1: return palette.grade1;
+    case 2: return palette.grade2;
+    case 3: return palette.grade3;
+    case 4: return palette.grade4;
+    default: return palette.grade0;
+  }
+};
+
 export default {
   light: {
-    primary: "#007A87",
-    primaryHover: "#006670",
+    primary: "#007A78",
+    primaryHover: "#006666",
     secondary: "#0F1E36",
-    accent: "#00B4D8",
+    accent: "#007A87",
     background: "#F4F8FA",
     surface: "#FFFFFF",
     surfaceSubtle: "#F8FAFC",
     cardBorder: "#E2E8F0",
     text: "#0B1A2C",
-    textMuted: "#5A6E85",
-    tint: "#007A87",
-    tabIconDefault: "#94A3B8",
-    tabIconSelected: "#007A87",
+    textMuted: "#475569",
+    tint: "#007A78",
+    tabIconDefault: "#64748B",
+    tabIconSelected: "#007A78",
     headerBackground: "#FFFFFF",
-    border: "#E2E8F0",
-    error: "#DC2626",
-    success: "#10B981",
-    warning: "#F59E0B",
+    border: "#CBD5E1",
+    error: "#B91C1C",
+    success: "#047857",
+    warning: "#B45309",
   },
   dark: {
-    primary: "#20B2AA",
-    primaryHover: "#007A87",
-    secondary: "#0F1E36",
+    primary: "#007A78",
+    primaryHover: "#006666",
+    secondary: "#CBD5E1",
     accent: "#38BDF8",
     background: "#0A111E",
     surface: "#111C2E",
@@ -73,11 +124,11 @@ export default {
     cardBorder: "#1E2D44",
     text: "#F1F5F9",
     textMuted: "#94A3B8",
-    tint: "#20B2AA",
-    tabIconDefault: "#64748B",
-    tabIconSelected: "#20B2AA",
+    tint: "#2DD4BF",
+    tabIconDefault: "#94A3B8",
+    tabIconSelected: "#2DD4BF",
     headerBackground: "#111C2E",
-    border: "#1E2D44",
+    border: "#334155",
     error: "#F87171",
     success: "#34D399",
     warning: "#FBBF24",

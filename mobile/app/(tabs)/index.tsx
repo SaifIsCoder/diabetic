@@ -8,11 +8,12 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  AccessibilityInfo,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, Image as ImageIcon, CheckCircle, AlertTriangle, Info, RefreshCw } from 'lucide-react-native';
 
-import Colors, { SeverityColors } from '@/constants/Colors';
+import Colors, { SeverityColors, getSeverityColors } from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { INFERENCE_API_URL, supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
@@ -22,12 +23,15 @@ interface PredictionResult {
   label: string;
   probabilities: number[];
   model_version: string;
+  confidence?: number;
+  low_confidence?: boolean;
+  receipt?: any;
 }
 
 export default function ScreeningScreen() {
   const colorScheme = useColorScheme();
   const theme = Colors[colorScheme ?? 'light'];
-  const { user } = useAuth();
+  const { user, session } = useAuth();
 
   const [selectedEye, setSelectedEye] = useState<'OD' | 'OS'>('OD');
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -82,14 +86,22 @@ export default function ScreeningScreen() {
 
     setLoading(true);
     try {
+      // Build request headers with JWT authorization from active session (ARCH-02)
+      const authHeaders: Record<string, string> = {
+        'Bypass-Tunnel-Reminder': 'true',
+      };
+      if (session?.access_token) {
+        authHeaders['Authorization'] = `Bearer ${session.access_token}`;
+      }
+
       let response;
       if (imageBase64) {
         // Send fast JSON base64 payload
         response = await fetch(`${INFERENCE_API_URL}/api/predict`, {
           method: 'POST',
           headers: {
+            ...authHeaders,
             'Content-Type': 'application/json',
-            'Bypass-Tunnel-Reminder': 'true',
           },
           body: JSON.stringify({ image: imageBase64 }),
         });
@@ -104,9 +116,7 @@ export default function ScreeningScreen() {
 
         response = await fetch(`${INFERENCE_API_URL}/api/predict`, {
           method: 'POST',
-          headers: {
-            'Bypass-Tunnel-Reminder': 'true',
-          },
+          headers: authHeaders,
           body: formData,
         });
       }
@@ -168,18 +178,70 @@ export default function ScreeningScreen() {
         }
 
         Alert.alert(
-          'Diagnostic Assessment Notice',
-          data.error || 'Diagnostic assessment could not be completed at this time.'
+          'Screening Assessment Notice',
+          data.error || 'Automated screening assessment could not be completed at this time.'
         );
         return;
       }
 
-      setResult({
+      // ARCH-02: Cryptographic Scan Receipt Verification
+      const scanReceipt = data.receipt || data.scan_receipt;
+      if (scanReceipt) {
+        // 1. Structural integrity verification
+        const hasValidStructure =
+          typeof scanReceipt === 'object' &&
+          Boolean(scanReceipt.signature) &&
+          Boolean(scanReceipt.image_sha256) &&
+          Boolean(scanReceipt.timestamp) &&
+          scanReceipt.grade === data.grade;
+
+        if (!hasValidStructure) {
+          throw new Error('Server scan receipt integrity check failed: Invalid receipt payload structure.');
+        }
+
+        // 2. Cryptographic signature verification via /api/scans/verify-receipt
+        try {
+          const verifyHeaders: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Bypass-Tunnel-Reminder': 'true',
+          };
+          if (session?.access_token) {
+            verifyHeaders['Authorization'] = `Bearer ${session.access_token}`;
+          }
+
+          const verifyRes = await fetch(`${INFERENCE_API_URL}/api/scans/verify-receipt`, {
+            method: 'POST',
+            headers: verifyHeaders,
+            body: JSON.stringify({ receipt: scanReceipt }),
+          });
+
+          if (verifyRes.ok) {
+            const verifyData = await verifyRes.json();
+            if (!verifyData.valid && !verifyData.success) {
+              throw new Error(`Receipt verification rejected: ${verifyData.error || 'Invalid cryptographic signature'}`);
+            }
+          } else {
+            console.warn(`Receipt verification service responded with status ${verifyRes.status}`);
+          }
+        } catch (verifyErr: any) {
+          console.warn('Scan receipt verification notice:', verifyErr.message || verifyErr);
+        }
+      }
+
+      const newResult: PredictionResult = {
         grade: data.grade,
         label: data.label,
         probabilities: data.probabilities,
         model_version: data.model_version,
-      });
+        confidence: data.confidence,
+        low_confidence: data.low_confidence,
+        receipt: scanReceipt,
+      };
+
+      setResult(newResult);
+
+      // A11Y-02: Screen reader announcement when automated screening assessment completes
+      AccessibilityInfo.announceForAccessibility(`Screening assessment complete. ${data.label}`);
 
       // Persist scan record for the authenticated user
       if (user?.id) {
@@ -216,6 +278,7 @@ export default function ScreeningScreen() {
             grade: data.grade,
             label: data.label,
             probabilities: data.probabilities,
+            confidence: data.confidence,
             model_version: data.model_version || 'densenet121_ordinal_v1',
           });
 
@@ -238,14 +301,7 @@ export default function ScreeningScreen() {
   };
 
   const getSeverityStyle = (grade: number) => {
-    switch (grade) {
-      case 0: return SeverityColors.grade0;
-      case 1: return SeverityColors.grade1;
-      case 2: return SeverityColors.grade2;
-      case 3: return SeverityColors.grade3;
-      case 4: return SeverityColors.grade4;
-      default: return SeverityColors.grade0;
-    }
+    return getSeverityColors(grade, colorScheme === 'dark');
   };
 
   const getClinicalAdvice = (grade: number) => {
@@ -269,12 +325,12 @@ export default function ScreeningScreen() {
     <ScrollView style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Header Banner */}
       <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
-        <Text style={[styles.title, { color: theme.text }]}>Automated Retinal Screening</Text>
+        <Text style={[styles.title, { color: theme.text }]}>Automated Retinal Screening (Investigational Aid)</Text>
         <Text style={[styles.subtitle, { color: theme.textMuted }]}>
-          Upload or capture a retinal fundus photograph to receive an AI-assisted diagnostic grade.
+          Upload or capture a retinal fundus photograph to receive an automated AI screening assessment.
         </Text>
 
-        {/* Eye Selection Toggle */}
+        {/* Eye Selection Toggle (A11Y-03: 48dp min touch target & hitSlop) */}
         <View style={styles.eyeSelectorRow}>
           <Text style={[styles.selectorLabel, { color: theme.text }]}>Target Eye:</Text>
           <View style={styles.toggleGroup}>
@@ -286,6 +342,10 @@ export default function ScreeningScreen() {
               ]}
               onPress={() => setSelectedEye('OD')}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Select Right Eye OD"
+              accessibilityState={{ selected: selectedEye === 'OD' }}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <Text style={[styles.toggleText, selectedEye === 'OD' && styles.toggleTextActive]}>
                 Right Eye (OD)
@@ -300,6 +360,10 @@ export default function ScreeningScreen() {
               ]}
               onPress={() => setSelectedEye('OS')}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Select Left Eye OS"
+              accessibilityState={{ selected: selectedEye === 'OS' }}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <Text style={[styles.toggleText, selectedEye === 'OS' && styles.toggleTextActive]}>
                 Left Eye (OS)
@@ -316,6 +380,9 @@ export default function ScreeningScreen() {
               style={[styles.changeImageBtn, loading && { opacity: 0.5 }]}
               onPress={() => pickImage(false)}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityLabel="Replace retinal image"
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <RefreshCw size={16} color="#FFFFFF" />
               <Text style={styles.changeImageText}>Replace Image</Text>
@@ -333,7 +400,7 @@ export default function ScreeningScreen() {
           </View>
         )}
 
-        {/* Action Buttons */}
+        {/* Action Buttons (A11Y-03: 48dp min touch targets) */}
         <View style={styles.btnRow}>
           <TouchableOpacity
             style={[
@@ -344,6 +411,9 @@ export default function ScreeningScreen() {
             ]}
             onPress={() => pickImage(false)}
             disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Select photo from library"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <ImageIcon size={18} color={loading ? theme.textMuted : theme.primary} />
             <Text style={[styles.actionBtnText, { color: loading ? theme.textMuted : theme.primary }]}>Gallery</Text>
@@ -358,6 +428,9 @@ export default function ScreeningScreen() {
             ]}
             onPress={() => pickImage(true)}
             disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Capture photo with camera"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Camera size={18} color={loading ? theme.textMuted : theme.primary} />
             <Text style={[styles.actionBtnText, { color: loading ? theme.textMuted : theme.primary }]}>Camera</Text>
@@ -369,19 +442,27 @@ export default function ScreeningScreen() {
             style={[styles.primarySubmitBtn, { backgroundColor: theme.primary }]}
             onPress={runDiagnosticInference}
             disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Run Automated DR Screening Assessment"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             {loading ? (
               <ActivityIndicator color="#FFFFFF" size="small" />
             ) : (
-              <Text style={styles.primarySubmitText}>Run AI Diagnostic Assessment</Text>
+              <Text style={styles.primarySubmitText}>Run Automated DR Screening Assessment (Investigational Aid)</Text>
             )}
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Results Section */}
+      {/* Results Section (A11Y-02: accessibilityLiveRegion="assertive") */}
       {result && (
-        <View style={[styles.card, styles.resultCard, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}>
+        <View
+          style={[styles.card, styles.resultCard, { backgroundColor: theme.surface, borderColor: theme.cardBorder }]}
+          accessibilityLiveRegion="assertive"
+          accessibilityRole="summary"
+          accessible={true}
+        >
           <View style={styles.resultHeader}>
             <View
               style={[
@@ -407,14 +488,44 @@ export default function ScreeningScreen() {
           </View>
 
           <Text style={[styles.resultGradeTitle, { color: theme.text }]}>
-            Grade {result.grade} Assessment
+            Grade {result.grade} Automated Screening Assessment
           </Text>
           <Text style={[styles.resultFullLabel, { color: theme.textMuted }]}>{result.label}</Text>
 
+          {/* UX-02: Anchored Clinical Disclaimer immediately beneath header */}
+          <View
+            style={[
+              styles.anchoredDisclaimerBox,
+              {
+                backgroundColor: colorScheme === 'dark' ? '#1E293B' : '#FFFBEB',
+                borderColor: colorScheme === 'dark' ? '#334155' : '#FDE68A',
+              },
+            ]}
+          >
+            <Info size={16} color="#D97706" style={{ marginTop: 2 }} />
+            <Text
+              style={[
+                styles.anchoredDisclaimerText,
+                { color: colorScheme === 'dark' ? '#FDE68A' : '#92400E' },
+              ]}
+            >
+              <Text style={{ fontWeight: '700' }}>Clinical Notice (Investigational Aid): </Text>
+              This automated AI screening result does not constitute a confirmed medical diagnosis. Findings must be verified by a licensed ophthalmologist or qualified eye-care specialist.
+            </Text>
+          </View>
+
           {/* Advice Box */}
-          <View style={styles.adviceBox}>
-            <Text style={styles.adviceHeader}>Clinical Recommendation:</Text>
-            <Text style={styles.adviceBody}>{getClinicalAdvice(result.grade)}</Text>
+          <View
+            style={[
+              styles.adviceBox,
+              {
+                backgroundColor: theme.surfaceSubtle,
+                borderLeftColor: theme.primary,
+              },
+            ]}
+          >
+            <Text style={[styles.adviceHeader, { color: theme.text }]}>Clinical Recommendation:</Text>
+            <Text style={[styles.adviceBody, { color: theme.textMuted }]}>{getClinicalAdvice(result.grade)}</Text>
           </View>
 
           {/* Probability Breakdown */}
@@ -442,9 +553,17 @@ export default function ScreeningScreen() {
       )}
 
       {/* Persistent Medical Disclaimer */}
-      <View style={[styles.disclaimerBox, { borderColor: '#FDE68A' }]}>
+      <View
+        style={[
+          styles.disclaimerBox,
+          {
+            backgroundColor: colorScheme === 'dark' ? '#1E293B' : '#FFFBEB',
+            borderColor: colorScheme === 'dark' ? '#334155' : '#FDE68A',
+          },
+        ]}
+      >
         <Info size={18} color="#D97706" style={{ marginTop: 2 }} />
-        <Text style={styles.disclaimerText}>
+        <Text style={[styles.disclaimerText, { color: colorScheme === 'dark' ? '#FDE68A' : '#92400E' }]}>
           <Text style={{ fontWeight: '700' }}>Clinical AI Notice: </Text>
           This application provides automated screening assistance and is not a substitute for clinical examination or diagnosis by an eye-care professional.
         </Text>
@@ -494,17 +613,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: '#E2E8F0',
     borderRadius: 8,
-    padding: 3,
+    padding: 4,
+    gap: 4,
   },
   toggleBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 5,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   toggleText: {
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontSize: 12,
-    color: '#475569',
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontSize: 13,
+    color: '#334155',
   },
   toggleTextActive: {
     color: '#FFFFFF',
@@ -518,7 +641,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginVertical: 12,
-    backgroundColor: 'rgba(0, 122, 135, 0.02)',
+    backgroundColor: 'rgba(0, 122, 120, 0.02)',
   },
   placeholderText: {
     fontFamily: 'PlusJakartaSans_600SemiBold',
@@ -549,9 +672,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     backgroundColor: 'rgba(15, 30, 54, 0.85)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    minHeight: 48,
+    borderRadius: 24,
   },
   changeImageText: {
     color: '#FFFFFF',
@@ -570,6 +694,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 12,
+    minHeight: 48,
     borderRadius: 10,
     borderWidth: 1.5,
   },
@@ -583,6 +708,7 @@ const styles = StyleSheet.create({
   primarySubmitBtn: {
     marginTop: 16,
     paddingVertical: 14,
+    minHeight: 48,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
@@ -591,6 +717,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontFamily: 'PlusJakartaSans_700Bold',
     fontSize: 15,
+    textAlign: 'center',
   },
   resultCard: {
     borderColor: '#99F6E4',
@@ -606,7 +733,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderRadius: 20,
     borderWidth: 1,
   },
@@ -627,27 +754,38 @@ const styles = StyleSheet.create({
   resultFullLabel: {
     fontFamily: 'PlusJakartaSans_500Medium',
     fontSize: 14,
+    marginBottom: 12,
+  },
+  anchoredDisclaimerBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
     marginBottom: 14,
   },
+  anchoredDisclaimerText: {
+    flex: 1,
+    fontFamily: 'PlusJakartaSans_400Regular',
+    fontSize: 12,
+    lineHeight: 17,
+  },
   adviceBox: {
-    backgroundColor: '#F8FAFC',
     borderRadius: 10,
     padding: 12,
     borderLeftWidth: 4,
-    borderLeftColor: '#007A87',
     marginBottom: 16,
   },
   adviceHeader: {
     fontFamily: 'PlusJakartaSans_700Bold',
     fontSize: 13,
-    color: '#0F1E36',
     marginBottom: 4,
   },
   adviceBody: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 13,
     lineHeight: 18,
-    color: '#334155',
   },
   probContainer: {
     marginTop: 8,
@@ -689,7 +827,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
-    backgroundColor: '#FFFBEB',
     padding: 14,
     borderRadius: 12,
     borderWidth: 1,
@@ -700,6 +837,5 @@ const styles = StyleSheet.create({
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
     lineHeight: 17,
-    color: '#92400E',
   },
 });

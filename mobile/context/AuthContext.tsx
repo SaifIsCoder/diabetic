@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import { supabase } from '@/lib/supabase';
 
@@ -52,6 +53,7 @@ interface AuthContextType {
     doctorDetails?: DoctorRegistrationData
   ) => Promise<{ error: Error | null; data?: any }>;
   signOut: () => Promise<void>;
+  clearCache: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<{ error: Error | null }>;
   updateSettings: (newSettings: Partial<UserSettings>) => Promise<void>;
@@ -82,6 +84,85 @@ async function writeStorageItem(key: string, value: string): Promise<void> {
     return;
   }
   await SecureStore.setItemAsync(key, value);
+}
+
+/**
+ * Resolves PRIV-04: Residual Unencrypted PHI in Mobile Device Cache.
+ * Purges cached fundus photography, exported clinical PDF summaries,
+ * and ephemeral storage items across Web and native FileSystem to guarantee
+ * zero residual health data remains on shared or public devices upon sign-out.
+ */
+export async function clearResidualPhiCache(currentUserId?: string | null): Promise<void> {
+  // 1. Purge Web localStorage and sessionStorage if running in browser
+  if (Platform.OS === 'web') {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.clear();
+      }
+      if (typeof localStorage !== 'undefined') {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (
+            key &&
+            (key.startsWith('scan_') ||
+              key.startsWith('phi_') ||
+              key.startsWith('offline_scans_') ||
+              key.includes('report') ||
+              key.includes('retinal'))
+          ) {
+            keysToRemove.push(key);
+          }
+        }
+        keysToRemove.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+      }
+    } catch (webErr) {
+      console.warn('Web cache clearance notice:', webErr);
+    }
+    return;
+  }
+
+  // 2. Native: Purge FileSystem.cacheDirectory (PDF exports, camera frames, temporary scan blobs)
+  try {
+    if (FileSystem && FileSystem.cacheDirectory) {
+      const files = await FileSystem.readDirectoryAsync(FileSystem.cacheDirectory);
+      for (const fileName of files) {
+        try {
+          const filePath = `${FileSystem.cacheDirectory}${fileName}`;
+          await FileSystem.deleteAsync(filePath, { idempotent: true });
+        } catch (fileErr) {
+          console.warn(`Failed to delete cached file ${fileName}:`, fileErr);
+        }
+      }
+    }
+  } catch (fsErr) {
+    console.warn('FileSystem cache clearance notice:', fsErr);
+  }
+
+  // 3. Purge sensitive PHI/session keys from SecureStore
+  try {
+    const sensitiveKeys = [
+      'cached_retinal_scans',
+      'temp_scan_buffer',
+      'active_patient_phi',
+      'last_screened_eye',
+    ];
+    if (currentUserId) {
+      sensitiveKeys.push(`offline_scans_${currentUserId}`);
+      sensitiveKeys.push(`cached_report_${currentUserId}`);
+    }
+    for (const key of sensitiveKeys) {
+      try {
+        await SecureStore.deleteItemAsync(key);
+      } catch {}
+    }
+  } catch (secErr) {
+    console.warn('SecureStore cache clearance notice:', secErr);
+  }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -157,6 +238,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await fetchProfile(currentSession.user.id);
           await loadUserSettings(currentSession.user.id);
         } else {
+          // PRIV-04: Purge unencrypted PHI cache on session termination
+          await clearResidualPhiCache();
           setProfile(null);
           setSettings(DEFAULT_SETTINGS);
         }
@@ -251,14 +334,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    const currentUserId = user?.id;
     try {
       await supabase.auth.signOut();
     } finally {
+      // PRIV-04: Clear residual unencrypted PHI and temp files on logout
+      await clearResidualPhiCache(currentUserId);
       setUser(null);
       setSession(null);
       setProfile(null);
       setSettings(DEFAULT_SETTINGS);
     }
+  };
+
+  const clearCache = async () => {
+    await clearResidualPhiCache(user?.id);
   };
 
   const refreshProfile = async () => {
@@ -310,6 +400,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signIn,
         signUp,
         signOut,
+        clearCache,
         refreshProfile,
         updateProfile,
         updateSettings,

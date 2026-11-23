@@ -127,6 +127,38 @@ def test_validate_image_bytes_unsupported_format():
         validate_image_bytes(buf.getvalue())
 
 
+def test_validate_image_bytes_rejects_pure_black():
+    img = Image.new("RGB", (200, 200), color=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    with pytest.raises(InvalidImageError, match="insufficient visual entropy/variance for a fundus photo"):
+        validate_image_bytes(buf.getvalue())
+
+
+def test_validate_image_bytes_rejects_pure_white():
+    img = Image.new("RGB", (200, 200), color=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    with pytest.raises(InvalidImageError, match="insufficient visual entropy/variance for a fundus photo"):
+        validate_image_bytes(buf.getvalue())
+
+
+def test_validate_image_bytes_rejects_flat_gray():
+    img = Image.new("RGB", (200, 200), color=(128, 128, 128))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    with pytest.raises(InvalidImageError, match="insufficient visual entropy/variance for a fundus photo"):
+        validate_image_bytes(buf.getvalue())
+
+
+def test_validate_image_bytes_rejects_blank():
+    img = Image.new("RGB", (200, 200), color=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    with pytest.raises(InvalidImageError, match="insufficient visual entropy/variance for a fundus photo"):
+        validate_image_bytes(buf.getvalue())
+
+
 # =========================================================================
 # Unit Tests: classify_fundus_image responses & exceptions
 # =========================================================================
@@ -237,6 +269,14 @@ def test_scenario_1_valid_fundus_accepted_and_dr_inferred(test_client, monkeypat
     assert res["label"] in app.GRADE_LABELS.values()
     assert len(res["probabilities"]) == 5
     assert res["validation"]["status"] == "valid_fundus"
+    assert "confidence" in res
+    assert isinstance(res["confidence"], float)
+    assert 0.0 <= res["confidence"] <= 1.0
+    assert "low_confidence" in res
+    assert isinstance(res["low_confidence"], bool)
+    assert res["model_version"] == "densenet121_ordinal_v1"
+    assert "scan_receipt" in res
+    assert "receipt" in res
 
 
 def test_scenario_2_selfie_rejected_no_dr_inference(test_client, monkeypatch):
@@ -521,8 +561,108 @@ def test_scenario_12_accepted_image_response_schema_compatibility(test_client, m
     assert isinstance(res["probabilities"], list)
     assert len(res["probabilities"]) == 5
     assert res["model_version"] == "densenet121_ordinal_v1"
+    assert "confidence" in res
+    assert isinstance(res["confidence"], float)
+    assert 0.0 <= res["confidence"] <= 1.0
+    assert "low_confidence" in res
+    assert isinstance(res["low_confidence"], bool)
     assert "validation" in res
     assert res["validation"]["status"] == "valid_fundus"
+    assert "scan_receipt" in res
+    assert "receipt" in res
+
+
+def test_scenario_blank_black_white_flat_rejected_locally_without_gemini(test_client, monkeypatch):
+    """Blank, pure black, pure white, and flat images are rejected locally before Gemini or inference."""
+    gemini_called = []
+    dense_net_called = []
+    monkeypatch.setattr(
+        "app.classify_fundus_image",
+        lambda *args, **kwargs: gemini_called.append(True)
+    )
+    monkeypatch.setattr(
+        "app.predict_grade",
+        lambda *args, **kwargs: dense_net_called.append(True)
+    )
+
+    # 1. Pure black image
+    black_img = Image.new("RGB", (224, 224), color=(0, 0, 0))
+    buf = io.BytesIO()
+    black_img.save(buf, format="JPEG")
+    resp = test_client.post(
+        "/api/predict",
+        data={"image": (io.BytesIO(buf.getvalue()), "black.jpg")},
+        content_type="multipart/form-data"
+    )
+    assert resp.status_code == 400
+    res = resp.get_json()
+    assert res["error_code"] == "INVALID_IMAGE"
+    assert "insufficient visual entropy/variance" in res["error"]
+    assert len(gemini_called) == 0
+    assert len(dense_net_called) == 0
+
+    # 2. Pure white image
+    white_img = Image.new("RGB", (224, 224), color=(255, 255, 255))
+    buf = io.BytesIO()
+    white_img.save(buf, format="JPEG")
+    resp = test_client.post(
+        "/api/predict",
+        data={"image": (io.BytesIO(buf.getvalue()), "white.jpg")},
+        content_type="multipart/form-data"
+    )
+    assert resp.status_code == 400
+    res = resp.get_json()
+    assert res["error_code"] == "INVALID_IMAGE"
+    assert "insufficient visual entropy/variance" in res["error"]
+    assert len(gemini_called) == 0
+    assert len(dense_net_called) == 0
+
+    # 3. Flat gray image
+    gray_img = Image.new("RGB", (224, 224), color=(128, 128, 128))
+    buf = io.BytesIO()
+    gray_img.save(buf, format="JPEG")
+    resp = test_client.post(
+        "/api/predict",
+        data={"image": (io.BytesIO(buf.getvalue()), "gray.jpg")},
+        content_type="multipart/form-data"
+    )
+    assert resp.status_code == 400
+    res = resp.get_json()
+    assert res["error_code"] == "INVALID_IMAGE"
+    assert "insufficient visual entropy/variance" in res["error"]
+    assert len(gemini_called) == 0
+    assert len(dense_net_called) == 0
+
+
+def test_scenario_sub_threshold_activations_low_confidence(test_client, monkeypatch):
+    """Sub-threshold sigmoid activations (<0.50) flag low_confidence: True in API response."""
+    monkeypatch.setattr(
+        "app.classify_fundus_image",
+        lambda *args, **kwargs: ValidationResult(
+            status=ValidationStatus.VALID_FUNDUS,
+            reason="Retinal photograph showing optic cup."
+        )
+    )
+    # Mock model predicting sub-threshold activations (<0.50)
+    monkeypatch.setattr(
+        "app.predict_grade",
+        lambda *args, **kwargs: (0, "No diabetic retinopathy", [0.35, 0.20, 0.10, 0.05, 0.01])
+    )
+
+    img_bytes = make_test_image(224, 224)
+    resp = test_client.post(
+        "/api/predict",
+        data={"image": (io.BytesIO(img_bytes), "fundus.jpg")},
+        content_type="multipart/form-data"
+    )
+    assert resp.status_code == 200
+    res = resp.get_json()
+    assert res["success"] is True
+    assert res["grade"] == 0
+    assert res["low_confidence"] is True
+    assert res["confidence"] == 0.35
+    assert res["model_version"] == "densenet121_ordinal_v1"
+    assert "scan_receipt" in res
 
 
 def test_health_endpoint_reports_gemini_status(test_client, monkeypatch):

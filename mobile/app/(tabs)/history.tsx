@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { Calendar, Eye, FileText, ChevronRight, CheckCircle, AlertTriangle, RefreshCw, Clock } from 'lucide-react-native';
 
-import Colors, { SeverityColors } from '@/constants/Colors';
+import Colors, { SeverityColors, getSeverityColors } from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -85,14 +85,7 @@ export default function HistoryScreen() {
   });
 
   const getSeverity = (grade: number) => {
-    switch (grade) {
-      case 0: return SeverityColors.grade0;
-      case 1: return SeverityColors.grade1;
-      case 2: return SeverityColors.grade2;
-      case 3: return SeverityColors.grade3;
-      case 4: return SeverityColors.grade4;
-      default: return SeverityColors.grade0;
-    }
+    return getSeverityColors(grade, colorScheme === 'dark');
   };
 
   const formatDate = (isoString: string) => {
@@ -191,7 +184,7 @@ export default function HistoryScreen() {
             <div class="title-area">
               <span class="badge-ai">CLINICAL SCREENING REPORT</span>
               <h1>Diabetic Retinopathy Longitudinal Evaluation</h1>
-              <p>AI Diagnostic Engine: DenseNet-121 Ordinal Classifier (Version: densenet121_ordinal_v1)</p>
+              <p>AI Automated Screening Engine: DenseNet-121 Ordinal Classifier (Investigational Aid)</p>
             </div>
             <div style="text-align: right;">
               <p style="margin: 0; font-size: 11px; color: #64748B;">Date Issued</p>
@@ -229,7 +222,7 @@ export default function HistoryScreen() {
                 <th style="width: 22%;">Date / Time</th>
                 <th style="width: 18%;">Eye</th>
                 <th style="width: 14%; text-align: center;">AI Grade</th>
-                <th style="width: 28%;">Diagnostic Classification</th>
+                <th style="width: 28%;">Automated Screening Classification</th>
                 <th style="width: 18%;">Clinical Notes</th>
               </tr>
             </thead>
@@ -320,7 +313,7 @@ export default function HistoryScreen() {
   const handleViewScan = (scan: ScanItem) => {
     Alert.alert(
       `Scan Record (${scan.eye === 'OD' ? 'Right Eye - OD' : 'Left Eye - OS'})`,
-      `Diagnostic Grade: Grade ${scan.grade}\nClassification: ${scan.label}\nCaptured: ${formatDate(scan.created_at)}\nStorage Path: ${scan.storage_path || 'Local Device'}`
+      `Screening Assessment: Grade ${scan.grade}\nClassification: ${scan.label}\nCaptured: ${formatDate(scan.created_at)}\nStorage Path: ${scan.storage_path || 'Local Device'}`
     );
   };
 
@@ -344,7 +337,9 @@ export default function HistoryScreen() {
           ]}
           onPress={handleExportPDF}
           disabled={exportingPdf || loading}
+          accessibilityRole="button"
           accessibilityLabel="Export Clinical PDF Summary"
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
           {exportingPdf ? (
             <ActivityIndicator size="small" color={theme.primary} />
@@ -367,6 +362,10 @@ export default function HistoryScreen() {
               filterEye === tab && { backgroundColor: theme.primary },
             ]}
             onPress={() => setFilterEye(tab)}
+            accessibilityRole="button"
+            accessibilityLabel={tab === 'ALL' ? 'Show all eyes' : tab === 'OD' ? 'Show right eye OD only' : 'Show left eye OS only'}
+            accessibilityState={{ selected: filterEye === tab }}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <Text
               style={[
@@ -396,7 +395,13 @@ export default function HistoryScreen() {
             <Text style={styles.errorTitle}>Could not load scans</Text>
             <Text style={styles.errorSub}>{errorMessage}</Text>
           </View>
-          <TouchableOpacity style={styles.retryBtn} onPress={() => fetchScans()}>
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={() => fetchScans()}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading scans"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <RefreshCw size={14} color="#FFFFFF" />
             <Text style={styles.retryBtnText}>Retry</Text>
           </TouchableOpacity>
@@ -410,7 +415,7 @@ export default function HistoryScreen() {
           <Text style={[styles.emptyTitle, { color: theme.text }]}>No Retinal Scans Found</Text>
           <Text style={[styles.emptySub, { color: theme.textMuted }]}>
             {filterEye === 'ALL'
-              ? 'When you capture and grade a retinal fundus photograph in the Screening tab, your diagnostic records will appear here.'
+              ? 'When you capture and grade a retinal fundus photograph in the Screening tab, your screening assessment records will appear here.'
               : `No scans recorded for ${filterEye === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}.`}
           </Text>
         </View>
@@ -430,9 +435,9 @@ export default function HistoryScreen() {
                   <Calendar size={14} color={theme.textMuted} />
                   <Text style={[styles.scanDate, { color: theme.textMuted }]}>{formatDate(scan.created_at)}</Text>
                 </View>
-                <View style={[styles.eyeBadge, { backgroundColor: theme.text, borderColor: theme.border }]}>
-                  <Eye size={12} color={theme.primary} />
-                  <Text style={[styles.eyeBadgeText, { color: theme.primary }]}>
+                <View style={[styles.eyeBadge, { backgroundColor: theme.surfaceSubtle, borderColor: theme.border }]}>
+                  <Eye size={12} color={colorScheme === 'dark' ? theme.tint : theme.primary} />
+                  <Text style={[styles.eyeBadgeText, { color: colorScheme === 'dark' ? theme.tint : theme.primary }]}>
                     {scan.eye === 'OD' ? 'Right Eye (OD)' : 'Left Eye (OS)'}
                   </Text>
                 </View>
@@ -458,9 +463,14 @@ export default function HistoryScreen() {
               <TouchableOpacity
                 style={[styles.scanFooter, { borderTopColor: theme.border }]}
                 onPress={() => handleViewScan(scan)}
+                accessibilityRole="button"
+                accessibilityLabel={`View screening assessment details for ${scan.eye === 'OD' ? 'Right Eye OD' : 'Left Eye OS'}`}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               >
-                <Text style={[styles.viewDetailsText, { color: theme.primary }]}>View Diagnostic Details</Text>
-                <ChevronRight size={16} color={theme.primary} />
+                <Text style={[styles.viewDetailsText, { color: colorScheme === 'dark' ? theme.tint : theme.primary }]}>
+                  View Screening Assessment Details
+                </Text>
+                <ChevronRight size={16} color={colorScheme === 'dark' ? theme.tint : theme.primary} />
               </TouchableOpacity>
             </View>
           );
@@ -502,6 +512,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 12,
+    minHeight: 48,
     borderRadius: 10,
     borderWidth: 1.5,
   },
@@ -515,16 +526,19 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   filterTab: {
-    paddingTop: 4,
-    paddingBottom: 6,
-    paddingHorizontal: 8,
-    borderRadius: 5,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
+    minWidth: 48,
+    borderRadius: 8,
     backgroundColor: '#E2E8F0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   filterTabText: {
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontSize: 12,
-    color: '#475569',
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontSize: 13,
+    color: '#334155',
   },
   filterTabTextActive: {
     color: '#FFFFFF',
@@ -556,8 +570,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     paddingHorizontal: 8,
-    paddingTop: 3,
-    paddingBottom: 5,
+    paddingVertical: 4,
     borderRadius: 6,
     borderWidth: 1,
   },
@@ -573,7 +586,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
     alignSelf: 'flex-start',
@@ -592,7 +605,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: 10,
+    paddingVertical: 12,
+    minHeight: 48,
     borderTopWidth: 1,
   },
   viewDetailsText: {
@@ -632,11 +646,13 @@ const styles = StyleSheet.create({
   retryBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
     backgroundColor: '#DC2626',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    minHeight: 48,
     borderRadius: 6,
+    justifyContent: 'center',
   },
   retryBtnText: {
     color: '#FFFFFF',
